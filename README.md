@@ -4,7 +4,7 @@ platforms: java
 author: alvadb
 ---
 
-# Manage Azure resources with  Java
+# Manage Azure resources with Java
 
 **On this page**
 
