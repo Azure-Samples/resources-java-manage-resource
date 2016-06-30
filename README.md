@@ -7,7 +7,7 @@ author: alvadb
 #Getting Started with Resources - Manage Resource - in Java #
 
 
-  Azure Resource sample for managing resources -
+  Resource: Manage Resource Sample (for 1.0.0-beta2) - demonstrates how to perform common tasks using the Microsoft Azure Resource management service.
    - Create a resource
    - Update a resource
    - Create another resource
