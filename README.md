@@ -1,21 +1,21 @@
 ---
-services: azure-resource-manager
+services: Resources
 platforms: java
 author: alvadb
 ---
 
-# Getting Started with Resources - Manage Resource - in Java
+#Getting Started with Resources - Manage Resource - in Java #
 
 
-  Resource: Manage Resource Sample (for 1.0.0-beta2) - demonstrates how to perform common tasks using the Microsoft Azure Resource management service.
-   - Create a resource
-   - Update a resource
-   - Create another resource
-   - List resources
-   - Delete a resource.
+  Azure Resource sample for managing resources -
+  - Create a resource
+  - Update a resource
+  - Create another resource
+  - List resources
+  - Delete a resource.
  
 
-## Running this Sample
+## Running this Sample ##
 
 To run this sample:
 
@@ -27,7 +27,7 @@ Set the environment variable `AZURE_AUTH_LOCATION` with the full path for an aut
 
     mvn clean compile exec:java
 
-## More information
+## More information ##
 
 [http://azure.com/java] (http://azure.com/java)
 

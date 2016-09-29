@@ -9,7 +9,7 @@ package com.microsoft.azure.management.resources.samples;
 
 import java.io.File;
 
-import com.microsoft.azure.Azure;
+import com.microsoft.azure.management.Azure;
 import com.microsoft.azure.management.resources.fluentcore.arm.Region;
 import com.microsoft.azure.management.resources.fluentcore.utils.ResourceNamer;
 import com.microsoft.azure.management.storage.SkuName;
@@ -35,7 +35,7 @@ public final class ManageResource {
      */
     public static void main(String[] args) {
 
-        final String rgName = ResourceNamer.randomResourceName("rgRSMA", 24);
+        final String rgName = ResourceNamer.randomResourceName("rgRSMR", 24);
         final String resourceName1 = ResourceNamer.randomResourceName("rn1", 24);
         final String resourceName2 = ResourceNamer.randomResourceName("rn2", 24);
 
