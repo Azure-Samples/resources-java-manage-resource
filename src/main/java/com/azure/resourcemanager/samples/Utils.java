@@ -3,26 +3,21 @@
 
 package com.azure.resourcemanager.samples;
 
-import com.azure.core.annotation.BodyParam;
-import com.azure.core.annotation.ExpectedResponses;
-import com.azure.core.annotation.Get;
-import com.azure.core.annotation.Host;
-import com.azure.core.annotation.HostParam;
-import com.azure.core.annotation.PathParam;
-import com.azure.core.annotation.Post;
-import com.azure.core.annotation.ServiceInterface;
 import com.azure.core.exception.HttpResponseException;
+import com.azure.core.http.HttpMethod;
+import com.azure.core.http.HttpPipeline;
 import com.azure.core.http.HttpPipelineBuilder;
+import com.azure.core.http.HttpRequest;
+import com.azure.core.http.HttpResponse;
 import com.azure.core.http.policy.HttpLogDetailLevel;
 import com.azure.core.http.policy.HttpLogOptions;
 import com.azure.core.http.policy.HttpLoggingPolicy;
 import com.azure.core.http.policy.RetryPolicy;
 import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.http.rest.Response;
-import com.azure.core.http.rest.RestProxy;
 import com.azure.core.http.rest.SimpleResponse;
+import com.azure.core.management.Region;
 import com.azure.core.management.exception.ManagementException;
-import com.azure.core.util.FluxUtil;
 import com.azure.core.util.logging.ClientLogger;
 import com.azure.core.util.serializer.JacksonAdapter;
 import com.azure.core.util.serializer.SerializerEncoding;
@@ -77,8 +72,8 @@ import com.azure.resourcemanager.dns.models.ARecordSet;
 import com.azure.resourcemanager.dns.models.AaaaRecordSet;
 import com.azure.resourcemanager.dns.models.CnameRecordSet;
 import com.azure.resourcemanager.dns.models.DnsZone;
-import com.azure.resourcemanager.dns.models.MxRecordSet;
 import com.azure.resourcemanager.dns.models.MxRecord;
+import com.azure.resourcemanager.dns.models.MxRecordSet;
 import com.azure.resourcemanager.dns.models.NsRecordSet;
 import com.azure.resourcemanager.dns.models.PtrRecordSet;
 import com.azure.resourcemanager.dns.models.SoaRecord;
@@ -129,6 +124,7 @@ import com.azure.resourcemanager.network.models.ApplicationGatewayProbe;
 import com.azure.resourcemanager.network.models.ApplicationGatewayRedirectConfiguration;
 import com.azure.resourcemanager.network.models.ApplicationGatewayRequestRoutingRule;
 import com.azure.resourcemanager.network.models.ApplicationGatewaySslCertificate;
+import com.azure.resourcemanager.network.models.CustomDnsConfigPropertiesFormat;
 import com.azure.resourcemanager.network.models.EffectiveNetworkSecurityRule;
 import com.azure.resourcemanager.network.models.FlowLogSettings;
 import com.azure.resourcemanager.network.models.LoadBalancer;
@@ -151,6 +147,7 @@ import com.azure.resourcemanager.network.models.NetworkWatcher;
 import com.azure.resourcemanager.network.models.NextHop;
 import com.azure.resourcemanager.network.models.PacketCapture;
 import com.azure.resourcemanager.network.models.PacketCaptureFilter;
+import com.azure.resourcemanager.network.models.PrivateEndpoint;
 import com.azure.resourcemanager.network.models.PublicIpAddress;
 import com.azure.resourcemanager.network.models.RouteTable;
 import com.azure.resourcemanager.network.models.SecurityGroupNetworkInterface;
@@ -167,9 +164,13 @@ import com.azure.resourcemanager.redis.models.RedisAccessKeys;
 import com.azure.resourcemanager.redis.models.RedisCache;
 import com.azure.resourcemanager.redis.models.RedisCachePremium;
 import com.azure.resourcemanager.redis.models.ScheduleEntry;
-import com.azure.core.management.Region;
+import com.azure.resourcemanager.resources.fluentcore.arm.models.PrivateLinkResource;
 import com.azure.resourcemanager.resources.fluentcore.utils.ResourceManagerUtils;
+import com.azure.resourcemanager.resources.models.ManagementLock;
 import com.azure.resourcemanager.resources.models.ResourceGroup;
+import com.azure.resourcemanager.search.models.AdminKeys;
+import com.azure.resourcemanager.search.models.QueryKey;
+import com.azure.resourcemanager.search.models.SearchService;
 import com.azure.resourcemanager.servicebus.models.AuthorizationKeys;
 import com.azure.resourcemanager.servicebus.models.NamespaceAuthorizationRule;
 import com.azure.resourcemanager.servicebus.models.Queue;
@@ -202,25 +203,29 @@ import com.azure.resourcemanager.trafficmanager.models.TrafficManagerNestedProfi
 import com.azure.resourcemanager.trafficmanager.models.TrafficManagerProfile;
 import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPClient;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -234,8 +239,13 @@ import java.util.stream.Collectors;
 /**
  * Common utils for Azure management samples.
  */
-
 public final class Utils {
+
+    // IMPORTANT: do not use SSHShell in Utils
+
+    private static final ClientLogger LOGGER = new ClientLogger(Utils.class);
+
+    private static String sshPublicKey;
 
     private Utils() {
     }
@@ -245,6 +255,35 @@ public final class Utils {
         String password = new ResourceManagerUtils.InternalRuntimeContext().randomResourceName("Pa5$", 12);
         System.out.printf("Password: %s%n", password);
         return password;
+    }
+
+    /**
+     * @return an SSH public key
+     */
+    public static String sshPublicKey() {
+        if (sshPublicKey == null) {
+            try {
+                KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+                keyGen.initialize(1024);
+                KeyPair pair = keyGen.generateKeyPair();
+                PublicKey publicKey = pair.getPublic();
+
+                RSAPublicKey rsaPublicKey = (RSAPublicKey) publicKey;
+                ByteArrayOutputStream byteOs = new ByteArrayOutputStream();
+                DataOutputStream dos = new DataOutputStream(byteOs);
+                dos.writeInt("ssh-rsa".getBytes(StandardCharsets.US_ASCII).length);
+                dos.write("ssh-rsa".getBytes(StandardCharsets.US_ASCII));
+                dos.writeInt(rsaPublicKey.getPublicExponent().toByteArray().length);
+                dos.write(rsaPublicKey.getPublicExponent().toByteArray());
+                dos.writeInt(rsaPublicKey.getModulus().toByteArray().length);
+                dos.write(rsaPublicKey.getModulus().toByteArray());
+                String publicKeyEncoded = new String(Base64.getEncoder().encode(byteOs.toByteArray()), StandardCharsets.US_ASCII);
+                sshPublicKey = "ssh-rsa " + publicKeyEncoded;
+            } catch (NoSuchAlgorithmException | IOException e) {
+                throw LOGGER.logExceptionAsError(new IllegalStateException("failed to generate ssh key", e));
+            }
+        }
+        return sshPublicKey;
     }
 
     /**
@@ -356,6 +395,12 @@ public final class Utils {
             storageProfile.append("\n\t\t\tCaching: ").append(resource.storageProfile().osDisk().caching());
             storageProfile.append("\n\t\t\tCreateOption: ").append(resource.storageProfile().osDisk().createOption());
             storageProfile.append("\n\t\t\tDiskSizeGB: ").append(resource.storageProfile().osDisk().diskSizeGB());
+            if (resource.storageProfile().osDisk().managedDisk() != null) {
+                if (resource.storageProfile().osDisk().managedDisk().diskEncryptionSet() != null) {
+                    storageProfile.append("\n\t\t\tDiskEncryptionSet Id: ")
+                        .append(resource.storageProfile().osDisk().managedDisk().diskEncryptionSet().id());
+                }
+            }
             if (resource.storageProfile().osDisk().image() != null) {
                 storageProfile.append("\n\t\t\tImage Uri: ").append(resource.storageProfile().osDisk().image().uri());
             }
@@ -390,6 +435,9 @@ public final class Utils {
                 if (resource.isManagedDiskEnabled()) {
                     if (disk.managedDisk() != null) {
                         storageProfile.append("\n\t\t\tManaged Disk Id: ").append(disk.managedDisk().id());
+                        if (disk.managedDisk().diskEncryptionSet() != null) {
+                            storageProfile.append("\n\t\t\tDiskEncryptionSet Id: ").append(disk.managedDisk().diskEncryptionSet().id());
+                        }
                     }
                 } else {
                     if (disk.vhd().uri() != null) {
@@ -700,6 +748,7 @@ public final class Utils {
         info.append("\n\t\tTraffic allowed from only HTTPS: ").append(storageAccount.innerModel().enableHttpsTrafficOnly());
 
         info.append("\n\tEncryption status: ");
+        info.append("\n\t\tInfrastructure Encryption: ").append(storageAccount.infrastructureEncryptionEnabled() ? "Enabled" : "Disabled");
         for (Map.Entry<StorageService, StorageAccountEncryptionStatus> eStatus : storageAccount.encryptionStatuses().entrySet()) {
             info.append("\n\t\t").append(eStatus.getValue().storageService()).append(": ").append(eStatus.getValue().isEnabled() ? "Enabled" : "Disabled");
         }
@@ -774,18 +823,18 @@ public final class Utils {
         System.out.println(redisKeys.toString());
     }
 
-//    /**
-//     * Print management lock.
-//     *
-//     * @param lock a management lock
-//     */
-//    public static void print(ManagementLock lock) {
-//        StringBuilder info = new StringBuilder();
-//        info.append("\nLock ID: ").append(lock.id())
-//                .append("\nLocked resource ID: ").append(lock.lockedResourceId())
-//                .append("\nLevel: ").append(lock.level());
-//        System.out.println(info.toString());
-//    }
+    /**
+     * Print management lock.
+     *
+     * @param lock a management lock
+     */
+    public static void print(ManagementLock lock) {
+        StringBuilder info = new StringBuilder();
+        info.append("\nLock ID: ").append(lock.id())
+                .append("\nLocked resource ID: ").append(lock.lockedResourceId())
+                .append("\nLevel: ").append(lock.level());
+        System.out.println(info.toString());
+    }
 
     /**
      * Print load balancer.
@@ -1549,43 +1598,43 @@ public final class Utils {
         System.out.println(info.toString());
     }
 
-//    /**
-//     * Print an Azure Search Service.
-//     *
-//     * @param searchService an Azure Search Service
-//     */
-//    public static void print(SearchService searchService) {
-//        StringBuilder info = new StringBuilder();
-//        AdminKeys adminKeys = searchService.getAdminKeys();
-//        List<QueryKey> queryKeys = searchService.listQueryKeys();
-//
-//        info.append("Azure Search: ").append(searchService.id())
-//                .append("\n\tResource group: ").append(searchService.resourceGroupName())
-//                .append("\n\tRegion: ").append(searchService.region())
-//                .append("\n\tTags: ").append(searchService.tags())
-//                .append("\n\tSku: ").append(searchService.sku().name())
-//                .append("\n\tStatus: ").append(searchService.status())
-//                .append("\n\tProvisioning State: ").append(searchService.provisioningState())
-//                .append("\n\tHosting Mode: ").append(searchService.hostingMode())
-//                .append("\n\tReplicas: ").append(searchService.replicaCount())
-//                .append("\n\tPartitions: ").append(searchService.partitionCount())
-//                .append("\n\tPrimary Admin Key: ").append(adminKeys.primaryKey())
-//                .append("\n\tSecondary Admin Key: ").append(adminKeys.secondaryKey())
-//                .append("\n\tQuery keys:");
-//
-//        for (QueryKey queryKey : queryKeys) {
-//            info.append("\n\t\tKey name: ").append(queryKey.name());
-//            info.append("\n\t\t   Value: ").append(queryKey.key());
-//        }
-//        System.out.println(info.toString());
-//    }
+    /**
+     * Print an Azure Search Service.
+     *
+     * @param searchService an Azure Search Service
+     */
+    public static void print(SearchService searchService) {
+        StringBuilder info = new StringBuilder();
+        AdminKeys adminKeys = searchService.getAdminKeys();
+        PagedIterable<QueryKey> queryKeys = searchService.listQueryKeys();
+
+        info.append("Azure Search: ").append(searchService.id())
+                .append("\n\tResource group: ").append(searchService.resourceGroupName())
+                .append("\n\tRegion: ").append(searchService.region())
+                .append("\n\tTags: ").append(searchService.tags())
+                .append("\n\tSku: ").append(searchService.sku().name())
+                .append("\n\tStatus: ").append(searchService.status())
+                .append("\n\tProvisioning State: ").append(searchService.provisioningState())
+                .append("\n\tHosting Mode: ").append(searchService.hostingMode())
+                .append("\n\tReplicas: ").append(searchService.replicaCount())
+                .append("\n\tPartitions: ").append(searchService.partitionCount())
+                .append("\n\tPrimary Admin Key: ").append(adminKeys.primaryKey())
+                .append("\n\tSecondary Admin Key: ").append(adminKeys.secondaryKey())
+                .append("\n\tQuery keys:");
+
+        for (QueryKey queryKey : queryKeys) {
+            info.append("\n\t\tKey name: ").append(queryKey.name());
+            info.append("\n\t\t   Value: ").append(queryKey.key());
+        }
+        System.out.println(info.toString());
+    }
 
     /**
      * Retrieve the secondary service principal client ID.
      *
      * @param envSecondaryServicePrincipal an Azure Container Registry
      * @return a service principal client ID
-     * @throws Exception exception
+     * @throws IOException exception
      */
     public static String getSecondaryServicePrincipalClientID(String envSecondaryServicePrincipal) throws IOException {
         String content = new String(Files.readAllBytes(new File(envSecondaryServicePrincipal).toPath()), StandardCharsets.UTF_8).trim();
@@ -1608,7 +1657,7 @@ public final class Utils {
      *
      * @param envSecondaryServicePrincipal an Azure Container Registry
      * @return a service principal secret
-     * @throws Exception exception
+     * @throws IOException exception
      */
     public static String getSecondaryServicePrincipalSecret(String envSecondaryServicePrincipal) throws IOException {
         String content = new String(Files.readAllBytes(new File(envSecondaryServicePrincipal).toPath()), StandardCharsets.UTF_8).trim();
@@ -1645,7 +1694,6 @@ public final class Utils {
      * @param password alias password
      * @param cnName domain name
      * @param dnsName dns name in subject alternate name
-     * @throws Exception exceptions from the creation
      * @throws IOException IO Exception
      */
     public static void createCertificate(String certPath, String pfxPath, String alias,
@@ -1713,7 +1761,7 @@ public final class Utils {
      * @param ignoreErrorStream : Boolean which controls whether to throw exception or not
      *                          based on error stream.
      * @return result :- depending on the method invocation.
-     * @throws Exception exceptions thrown from the execution
+     * @throws IOException exceptions thrown from the execution
      */
     public static String cmdInvocation(String[] command,
                                        boolean ignoreErrorStream) throws IOException {
@@ -1730,7 +1778,7 @@ public final class Utils {
             result = br.readLine();
             process.waitFor();
             error = ebr.readLine();
-            if (error != null && (!error.equals(""))) {
+            if (error != null && (!"".equals(error))) {
                 // To do - Log error message
 
                 if (!ignoreErrorStream) {
@@ -2554,7 +2602,6 @@ public final class Utils {
                 .append("\n\tName: ").append(user.name())
                 .append("\n\tMail: ").append(user.mail())
                 .append("\n\tMail Nickname: ").append(user.mailNickname())
-                .append("\n\tSign In Name: ").append(user.signInName())
                 .append("\n\tUser Principal Name: ").append(user.userPrincipalName());
 
         System.out.println(builder.toString());
@@ -3306,7 +3353,6 @@ public final class Utils {
         StringBuilder info = new StringBuilder("Spring Service: ")
             .append("\n\tId: ").append(springApp.id())
             .append("\n\tName: ").append(springApp.name())
-            .append("\n\tCreated Time: ").append(springApp.createdTime())
             .append("\n\tPublic Endpoint: ").append(springApp.isPublic())
             .append("\n\tUrl: ").append(springApp.url())
             .append("\n\tHttps Only: ").append(springApp.isHttpsOnly())
@@ -3336,6 +3382,63 @@ public final class Utils {
     }
 
     /**
+     * Print private link resource.
+     *
+     * @param privateLinkResource the private link resource
+     */
+    public static void print(PrivateLinkResource privateLinkResource) {
+        StringBuilder info = new StringBuilder("Private Link Resource: ")
+            .append("\n\tGroup ID: ").append(privateLinkResource.groupId())
+            .append("\n\tRequired Member Names: ").append(privateLinkResource.requiredMemberNames())
+            .append("\n\tRequired DNS Zone Names: ").append(privateLinkResource.requiredDnsZoneNames());
+
+        System.out.println(info);
+    }
+
+    /**
+     * Print private endpoint.
+     *
+     * @param privateEndpoint the private endpoint
+     */
+    public static void print(PrivateEndpoint privateEndpoint) {
+        StringBuilder info = new StringBuilder("Private Endpoint: ")
+            .append("\n\tId: ").append(privateEndpoint.id())
+            .append("\n\tName: ").append(privateEndpoint.name());
+
+        if (privateEndpoint.privateLinkServiceConnections() != null && !privateEndpoint.privateLinkServiceConnections().isEmpty()) {
+            for (PrivateEndpoint.PrivateLinkServiceConnection connection : privateEndpoint.privateLinkServiceConnections().values()) {
+                info
+                    .append("\n\t\tPrivate Link Service Connection Name: ").append(connection.name())
+                    .append("\n\t\tPrivate Link Resource ID: ").append(connection.privateLinkResourceId())
+                    .append("\n\t\tSub Resource Names: ").append(connection.subResourceNames())
+                    .append("\n\t\tProvision Status: ").append(connection.state().status());
+            }
+        }
+
+        if (privateEndpoint.privateLinkServiceConnections() != null && !privateEndpoint.privateLinkServiceConnections().isEmpty()) {
+            info.append("\n\tPrivate Link Service Connections:");
+            for (PrivateEndpoint.PrivateLinkServiceConnection connection : privateEndpoint.privateLinkServiceConnections().values()) {
+                info
+                    .append("\n\t\tName: ").append(connection.name())
+                    .append("\n\t\tPrivate Link Resource ID: ").append(connection.privateLinkResourceId())
+                    .append("\n\t\tSub Resource Names: ").append(connection.subResourceNames())
+                    .append("\n\t\tStatus: ").append(connection.state().status());
+            }
+        }
+
+        if (privateEndpoint.customDnsConfigurations() != null && !privateEndpoint.customDnsConfigurations().isEmpty()) {
+            info.append("\n\tCustom DNS Configure:");
+            for (CustomDnsConfigPropertiesFormat customDns : privateEndpoint.customDnsConfigurations()) {
+                info
+                    .append("\n\t\tFQDN: ").append(customDns.fqdn())
+                    .append("\n\t\tIP Address: ").append(customDns.ipAddresses());
+            }
+        }
+
+        System.out.println(info);
+    }
+
+    /**
      * Sends a GET request to target URL.
      * <p>
      * Retry logic tuned for AppService.
@@ -3345,33 +3448,35 @@ public final class Utils {
      * @return Content of the HTTP response.
      */
     public static String sendGetRequest(String urlString) {
-        ClientLogger logger = new ClientLogger(Utils.class);
+        HttpRequest request = new HttpRequest(HttpMethod.GET, urlString);
+        Mono<Response<String>> response =
+            stringResponse(HTTP_PIPELINE.send(request)
+                .flatMap(response1 -> {
+                    int code = response1.getStatusCode();
+                    if (code == 200 || code == 400 || code == 404) {
+                        return Mono.just(response1);
+                    } else {
+                        return Mono.error(new HttpResponseException(response1));
+                    }
+                })
+                .retryWhen(Retry
+                    .fixedDelay(5, Duration.ofSeconds(30))
+                    .filter(t -> {
+                        boolean retry = false;
+                        if (t instanceof TimeoutException) {
+                            retry = true;
+                        } else if (t instanceof HttpResponseException
+                            && ((HttpResponseException) t).getResponse().getStatusCode() == 503) {
+                            retry = true;
+                        }
 
-        try {
-            Mono<Response<Flux<ByteBuffer>>> response =
-                HTTP_CLIENT.getString(getHost(urlString), getPathAndQuery(urlString))
-                    .retryWhen(Retry
-                        .fixedDelay(5, Duration.ofSeconds(30))
-                        .filter(t -> {
-                            boolean retry = false;
-                            if (t instanceof TimeoutException) {
-                                retry = true;
-                            } else if (t instanceof HttpResponseException
-                                && ((HttpResponseException) t).getResponse().getStatusCode() == 503) {
-                                retry = true;
-                            }
-
-                            if (retry) {
-                                logger.info("retry GET request to {}", urlString);
-                            }
-                            return retry;
-                        }));
-            Response<String> ret = stringResponse(response).block();
-            return ret == null ? null : ret.getValue();
-        } catch (MalformedURLException e) {
-            logger.logThrowableAsError(e);
-            return null;
-        }
+                        if (retry) {
+                            LOGGER.info("retry GET request to {}", urlString);
+                        }
+                        return retry;
+                    })));
+        Response<String> ret = response.block();
+        return ret == null ? null : ret.getValue();
     }
 
     /**
@@ -3384,11 +3489,18 @@ public final class Utils {
      * @return Content of the HTTP response.
      * */
     public static String sendPostRequest(String urlString, String body) {
-        ClientLogger logger = new ClientLogger(Utils.class);
-
         try {
+            HttpRequest request = new HttpRequest(HttpMethod.POST, urlString).setBody(body);
             Mono<Response<String>> response =
-                stringResponse(HTTP_CLIENT.postString(getHost(urlString), getPathAndQuery(urlString), body))
+                stringResponse(HTTP_PIPELINE.send(request)
+                    .flatMap(response1 -> {
+                        int code = response1.getStatusCode();
+                        if (code == 200 || code == 400 || code == 404) {
+                            return Mono.just(response1);
+                        } else {
+                            return Mono.error(new HttpResponseException(response1));
+                        }
+                    })
                     .retryWhen(Retry
                         .fixedDelay(5, Duration.ofSeconds(30))
                         .filter(t -> {
@@ -3398,66 +3510,42 @@ public final class Utils {
                             }
 
                             if (retry) {
-                                logger.info("retry POST request to {}", urlString);
+                                LOGGER.info("retry POST request to {}", urlString);
                             }
                             return retry;
-                        }));
+                        })));
             Response<String> ret = response.block();
             return ret == null ? null : ret.getValue();
         } catch (Exception e) {
-            logger.logThrowableAsError(e);
+            LOGGER.logThrowableAsError(e);
             return null;
         }
     }
 
-    private static Mono<Response<String>> stringResponse(Mono<Response<Flux<ByteBuffer>>> responseMono) {
-        return responseMono.flatMap(response -> FluxUtil.collectBytesInByteBufferStream(response.getValue())
-                .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
+    private static Mono<Response<String>> stringResponse(Mono<HttpResponse> responseMono) {
+        return responseMono.flatMap(response -> response.getBodyAsString()
                 .map(str -> new SimpleResponse<>(response.getRequest(), response.getStatusCode(), response.getHeaders(), str)));
     }
 
-    private static String getHost(String urlString) throws MalformedURLException {
-        URL url = new URL(urlString);
-        String protocol = url.getProtocol();
-        String host = url.getAuthority();
-        return protocol + "://" + host;
-    }
+    private static final HttpPipeline HTTP_PIPELINE = new HttpPipelineBuilder()
+        .policies(
+            new HttpLoggingPolicy(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BASIC)),
+            new RetryPolicy("Retry-After", ChronoUnit.SECONDS))
+        .build();
 
-    private static String getPathAndQuery(String urlString) throws MalformedURLException {
-        URL url = new URL(urlString);
-        String path = url.getPath();
-        String query = url.getQuery();
-        if (query != null && !query.isEmpty()) {
-            path = path + "?" + query;
-        }
-        return path;
-    }
-
-    private static final WebAppTestClient HTTP_CLIENT = RestProxy.create(
-            WebAppTestClient.class,
-            new HttpPipelineBuilder()
-                    .policies(
-                        new HttpLoggingPolicy(new HttpLogOptions().setLogLevel(HttpLogDetailLevel.BASIC)),
-                        new RetryPolicy("Retry-After", ChronoUnit.SECONDS))
-                    .build());
-
-    @Host("{$host}")
-    @ServiceInterface(name = "WebAppTestClient")
-    private interface WebAppTestClient {
-        @Get("{path}")
-        @ExpectedResponses({200, 400, 404})
-        Mono<Response<Flux<ByteBuffer>>> getString(@HostParam("$host") String host, @PathParam(value = "path", encoded = true) String path);
-
-        @Post("{path}")
-        @ExpectedResponses({200, 400, 404})
-        Mono<Response<Flux<ByteBuffer>>> postString(@HostParam("$host") String host, @PathParam(value = "path", encoded = true) String path, @BodyParam("text/plain") String body);
-    }
-
+    /**
+     * Get the size of the iterable.
+     *
+     * @param iterable iterable to count size
+     * @param <T> generic type parameter of the iterable
+     * @return size of the iterable
+     */
     public static <T> int getSize(Iterable<T> iterable) {
         int res = 0;
         Iterator<T> iterator = iterable.iterator();
         while (iterator.hasNext()) {
             iterator.next();
+            res++;
         }
         return res;
     }
